@@ -1,8 +1,10 @@
-from fastapi import Depends
+from fastapi import FastAPI, Depends
 
 from sqlalchemy.orm import Session
 from database import SessionLocal
 from models import PeopleCount
+
+app = FastAPI()
 
 def get_db():
     db = SessionLocal()
