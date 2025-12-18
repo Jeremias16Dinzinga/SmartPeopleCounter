@@ -1,11 +1,19 @@
-from fastapi import FastAPI
+from fastapi import Depends
 
-app = FastAPI(
-    title="SmartPeopleCounter",
-    description="Sistema inteligente de contagem de pessoas",
-    version="1.0.0"
-)
+from sqlalchemy.orm import Session
+from database import SessionLocal
+from models import PeopleCount
 
-@app.get("/")
-def root():
-    return {"message": "SmartPeopleCounter API está online"}
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+@app.post("/count")
+def save_count(count: int, db: Session = Depends(get_db)):
+    record = PeopleCount(count=count)
+    db.add(record)
+    db.commit()
+    return {"message": "Contagem salva com sucesso"}
