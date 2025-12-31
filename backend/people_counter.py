@@ -2,9 +2,11 @@ import cv2
 from ultralytics import YOLO
 
 model = YOLO("yolov8n.pt")
+model.verbose = False
 
 def start_people_counter(stream_url):
     cap = cv2.VideoCapture(stream_url)
+    #cap = cv2.VideoCapture(0)
 
     if not cap.isOpened():
         print("Erro ao abrir a câmera")
