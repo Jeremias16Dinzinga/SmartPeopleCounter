@@ -1,8 +1,7 @@
 from fastapi import FastAPI, Depends
-
-app = FastAPI()
-
 from people_counter import start_people_counter
+
+app = FastAPI(title="SmartPeopleCounter")
 
 @app.get("/start-counter")
 def start_counter():
