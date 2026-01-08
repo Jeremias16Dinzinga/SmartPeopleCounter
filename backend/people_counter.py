@@ -6,105 +6,152 @@ from tracker import CentroidTracker
 from database import SessionLocal
 from models import PeopleCount
 
-# Carregar modelo YOLOv8
-model = YOLO("yolov8n.pt")
-model.verbose = False
+STREAM_URL = "http://172.20.10.2:8080/video"
+LINE_X = None
+SAVE_INTERVAL = 1
 
-# Tracker de centroides
+model = YOLO("yolov8n.pt")
 tracker = CentroidTracker()
 
-# Linha virtual
-LINE_Y = 300
+def get_last_totals():
+    db = SessionLocal()
+    try:
 
-# Intervalo para salvar no MySQL (em segundos)
-SAVE_INTERVAL = 60
+        last_record = db.query(PeopleCount).order_by(PeopleCount.id.desc()).first()
+        if last_record:
+            return last_record.entered, last_record.exited, last_record.current_people
+        else:
+            return 0, 0, 0
+    except Exception as e:
+        print("Erro ao buscar últimos valores:", e)
+        return 0, 0, 0
+    finally:
+        db.close()
 
 
-def start_people_counter(stream_url, manager, loop):
-    cap = cv2.VideoCapture(stream_url)
-
+def start_people_counter(manager, loop):
+    cap = cv2.VideoCapture(STREAM_URL)
     if not cap.isOpened():
-        print("Erro ao abrir a câmera")
+        print("Erro ao abrir IP Webcam")
         return
 
-    entered = 0
-    exited = 0
+    entered, exited, current_people = get_last_totals()
+    crossed = {}
+    last_saved_values = {"entered": -1, "exited": -1, "current": -1}
     last_save = time.time()
-    last_saved_people = -1  # controla gravação somente se houver mudança
-
-    already_crossed = {}
+    alert_visible = True
+    alert_timer = 0
 
     while True:
         ret, frame = cap.read()
         if not ret:
-            # Se a câmera falhar momentaneamente, continuar
-            time.sleep(0.01)
+            time.sleep(0.05)
             continue
 
-        detections = []
+        h, w, _ = frame.shape
+        LINE_X = w // 2
 
-        # Inferência YOLO
-        results = model(frame, stream=True)
+        detections = []
+        results = model(frame, conf=0.4, iou=0.5, verbose=False)
 
         for r in results:
             for box in r.boxes:
-                if int(box.cls[0]) == 0:  # classe 0 = pessoa
+                if int(box.cls[0]) == 0:
                     x1, y1, x2, y2 = map(int, box.xyxy[0])
-                    cx = int((x1 + x2) / 2)
-                    cy = int((y1 + y2) / 2)
+                    cx = (x1 + x2) // 2
+                    cy = (y1 + y2) // 2
                     detections.append((cx, cy))
 
-        # Atualiza rastreamento
+                    # Bounding box
+                    cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+
         objects, previous = tracker.update(detections)
 
-        # Contagem por linha
-        for object_id, (cx, cy) in objects.items():
-            prev_cy = previous.get(object_id, cy)
+        for oid, (cx, cy) in objects.items():
+            prev_pos = previous.get(oid, (cx, cy))
+            prev_cx, prev_cy = prev_pos
 
-            if object_id not in already_crossed:
-                already_crossed[object_id] = None
+            if oid not in crossed:
+                crossed[oid] = None
 
-            # Entrada
-            if prev_cy < LINE_Y and cy >= LINE_Y and already_crossed[object_id] != "down":
+            # ENTRADA → esquerda para direita
+            if prev_cx < LINE_X <= cx and crossed[oid] != "right":
                 entered += 1
-                already_crossed[object_id] = "down"
+                crossed[oid] = "right"
 
-            # Saída
-            elif prev_cy > LINE_Y and cy <= LINE_Y and already_crossed[object_id] != "up":
+            # SAÍDA → direita para esquerda
+            elif prev_cx > LINE_X >= cx and crossed[oid] != "left":
                 exited += 1
-                already_crossed[object_id] = "up"
+                crossed[oid] = "left"
 
-        # Total de pessoas atuais (nunca negativo)
+            # ID
+            cv2.circle(frame, (cx, cy), 5, (0, 255, 0), -1)
+            cv2.putText(frame, f"ID {oid}", (cx - 15, cy - 10),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+
         current_people = max(0, entered - exited)
 
-        # Enviar dados para frontend em tempo real
+        # Linha virtual vertical
+        cv2.line(frame, (LINE_X, 0), (LINE_X, frame.shape[0]), (255, 0, 0), 2)
+
+        # Contadores no vídeo
+        cv2.putText(frame, f"Entradas: {entered}", (20, 40),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+        cv2.putText(frame, f"Saidas: {exited}", (20, 70),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
+        cv2.putText(frame, f"Atual: {current_people}", (20, 100),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
+
+        # ALERTA DE ENTRADA SUSPEITA
+        alert_msg = ""
+        if exited > entered:
+            alert_msg = f"ALERTA: {exited - entered} Entrada suspeita detectada!"
+
+            if time.time() - alert_timer > 0.5:
+                alert_visible = not alert_visible
+                alert_timer = time.time()
+
+            if alert_visible:
+                cv2.putText(frame, alert_msg, (20, 140),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 3)
+
         asyncio.run_coroutine_threadsafe(
             manager.broadcast({
                 "entered": entered,
                 "exited": exited,
-                "current_people": current_people
+                "current": current_people,
+                "alert": alert_msg
             }),
             loop
         )
 
-        # Gravar no MySQL somente se houver alteração
-        if time.time() - last_save >= SAVE_INTERVAL:
-            if current_people != last_saved_people:
-                db = SessionLocal()
-                try:
-                    db.add(PeopleCount(
-                        entered=entered,
-                        exited=exited,
-                        current_people=current_people
-                    ))
-                    db.commit()
-                    last_saved_people = current_people
-                except Exception as e:
-                    print("Erro ao gravar no MySQL:", e)
-                    db.rollback()
-                finally:
-                    db.close()
-            last_save = time.time()
+        if ((entered != last_saved_values["entered"] or
+            exited != last_saved_values["exited"] or
+            current_people != last_saved_values["current"]) and
+            (time.time() - last_save >= SAVE_INTERVAL)):
 
-        # Pequeno delay para reduzir uso de CPU
-        time.sleep(0.01)
+            db = SessionLocal()
+            try:
+                db.add(PeopleCount(
+                    entered=entered,
+                    exited=exited,
+                    current_people=current_people
+                ))
+                db.commit()
+                # Atualiza últimos valores salvos e tempo
+                last_saved_values["entered"] = entered
+                last_saved_values["exited"] = exited
+                last_saved_values["current"] = current_people
+                last_save = time.time()
+            except Exception as e:
+                db.rollback()
+                print("DB erro:", e)
+            finally:
+                db.close()
+
+        cv2.imshow("SmartPeopleCounter - IP Webcam", frame)
+        if cv2.waitKey(1) & 0xFF == ord("q"):
+            break
+
+    cap.release()
+    cv2.destroyAllWindows()
