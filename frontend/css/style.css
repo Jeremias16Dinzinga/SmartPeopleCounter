@@ -1,31 +1,38 @@
 body {
     margin: 0;
-    font-family: Arial, sans-serif;
+    font-family: 'Arial', sans-serif;
     background: #f5f5f5;
 }
 
-header {
-    background: #c62828;
-    color: white;
-    padding: 20px;
-    text-align: center;
+header h1 {
+    font-size: 2rem;
 }
 
-.card {
-    background: white;
-    margin: 40px auto;
-    padding: 30px;
-    width: 300px;
-    border-radius: 10px;
-    text-align: center;
-    box-shadow: 0 5px 15px rgba(0,0,0,0.2);
+.display-4 {
+    font-size: 3rem;
 }
 
-.card h2 {
-    color: #c62828;
+#alertText {
+    animation: blink-text 1s infinite;
 }
 
-#total {
-    font-size: 48px;
+@keyframes blink-text {
+    0%, 50%, 100% { color: red; }
+    25%, 75% { color: transparent; }
+}
+
+/* Cards */
+.card-title {
     font-weight: bold;
+}
+
+/* Tabela de histórico */
+.history table {
+    background: white;
+    border-radius: 10px;
+    overflow: hidden;
+}
+
+.history th, .history td {
+    font-weight: 500;
 }
